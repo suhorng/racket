@@ -8,6 +8,7 @@
          "blame.rkt"
          "generate.rkt"
          syntax/location
+         (only-in racket/list take drop)
          racket/private/performance-hint
          (for-syntax racket/base
                      racket/stxparam-exptime
@@ -115,55 +116,157 @@
 
 (define (exercise->i ctc)
   (define arg-deps (->i-arg-dep-ctcs ctc))
+  (define res-deps (->i-rng-dep-ctcs ctc))
   (cond
-    [(and (null? arg-deps) (not (->i-rest ctc)))
+    [(not (->i-rest ctc))
+     (define args-info
+       (for/list ([arg-info (in-list (vector-ref (->i-name-info ctc) 0))]
+                  ;; unless the given argument is optional
+                  #:when (not (list-ref arg-info 4)))
+         arg-info))
+     (define nondep-args (map ->i-arg-name (->i-arg-ctcs ctc)))
+     (define ress-info (vector-ref (->i-name-info ctc) 3))
+     (define dep-args-order
+       (let topological-sort ([gen-order '()]
+                              [args (for/list ([arg-info (in-list args-info)]
+                                               #:when (equal? 'dep (car arg-info)))
+                                      arg-info)])
+         (cond
+           [(null? args) (reverse gen-order)]
+           [else
+            (define (var-available? var)
+              (or (member var nondep-args) (member var gen-order)))
+            (define arg-index
+              (for/first ([i (in-naturals)]
+                          [arg-info (in-list args)]
+                          #:when (andmap var-available? (caddr arg-info)))
+                i))
+            (topological-sort (cons (cadr (list-ref args arg-index)) gen-order)
+                              ;; (list-remove args arg-index)
+                              (append (take args arg-index)
+                                      (drop args (+ arg-index 1))))])))
      (λ (fuel)
+       (define env (contract-random-generate-get-current-environment))
        (define gens (for/list ([arg-ctc (in-list (->i-arg-ctcs ctc))]
-                               #:when (and (not (->i-arg-optional? arg-ctc))
-                                           (not (->i-arg-kwd arg-ctc))))
+                               #:when (not (->i-arg-optional? arg-ctc)))
                       (contract-random-generate/choose (->i-arg-contract arg-ctc) fuel)))
-       (define kwd-gens (for/list ([arg-ctc (in-list (->i-arg-ctcs ctc))]
-                                   #:when (and (not (->i-arg-optional? arg-ctc))
-                                               (->i-arg-kwd arg-ctc)))
-                          (contract-random-generate/choose (->i-arg-contract arg-ctc) fuel)))
-       (define dom-kwds (for/list ([arg-ctc (in-list (->i-arg-ctcs ctc))]
-                                   #:when (and (not (->i-arg-optional? arg-ctc))
-                                               (->i-arg-kwd arg-ctc)))
-                          (->i-arg-kwd arg-ctc)))
+       (define kwd-vars (for/hash ([i (in-naturals)]
+                                   [arg-info (in-list args-info)]
+                                   ;; (cadddr arg-info) is (->i-arg-kwd ARG)
+                                   #:when (cadddr arg-info))
+                          (values (cadddr arg-info))))
+       (define dom-kwds (->i-mandatory-kwds ctc))
        (define rng-ctcs (map cdr (->i-rng-ctcs ctc)))
        (define rng-exers
-         (and rng-ctcs
               (for/list ([rng-ctc (in-list rng-ctcs)])
                 (define-values (exer ctcs)
                   ((contract-struct-exercise rng-ctc) fuel))
-                exer)))
+                exer))
        (cond
          [(andmap values gens)
-          (define env (contract-random-generate-get-current-environment))
+          (define arg-index
+            (for/hash ([i (in-naturals)]
+                       [arg-info (in-list args-info)])
+              (values (cadr arg-info) i)))
+          (define arg-count (length args-info))
+          (define raw-dep-args-info
+            (for/list ([arg-info (in-list args-info)]
+                       #:when (equal? 'dep (car arg-info)))
+              arg-info))
+          (define dep-args-info
+            (for/hash ([arg-info (in-list raw-dep-args-info)])
+              (values (cadr arg-info) arg-info)))
+          (define dep-args-index
+            (for/hash ([i (in-naturals)]
+                       [arg-info (in-list raw-dep-args-info)])
+              (values (cadr arg-info) i)))
+          (define ress-index
+            (for/hash ([i (in-naturals)]
+                       [res-info (in-list ress-info)])
+              (values (cadr res-info) i)))
           (values (λ (f)
-                    (call-with-values
-                     (λ ()
-                       (define kwd-args 
-                         (for/list ([kwd-gen (in-list kwd-gens)])
-                           (kwd-gen)))
-                       (define regular-args 
-                         (for/list ([gen (in-list gens)])
-                           (gen)))
-                       (keyword-apply 
-                        f
-                        dom-kwds
-                        kwd-args
-                        regular-args))
-                     (λ results
-                       (void)
-                       (when rng-ctcs
-                         (for ([res-ctc (in-list rng-ctcs)]
-                               [result (in-list results)])
-                           (contract-random-generate-stash env res-ctc result))
-                         (for ([exer (in-list rng-exers)]
-                               [result (in-list results)])
-                           (exer result))))))
-                  (or rng-ctcs '()))]
+(newline)
+                    (define args-buffer (make-vector arg-count 'no-value))
+                    (for ([arg (in-list nondep-args)]
+                          [gen (in-list gens)])
+                      (vector-set! args-buffer
+                                   (hash-ref arg-index arg)
+                                   (gen)))
+                    (define dep-generated?
+                      (for/and ([arg (in-list dep-args-order)])
+                        (define vars (caddr (hash-ref dep-args-info arg)))
+                        (define vars-value
+                          (for/list ([var (in-list vars)])
+                            (vector-ref args-buffer (hash-ref arg-index var))))
+                        (define the-contract
+                          (apply (list-ref arg-deps (hash-ref dep-args-index arg))
+                            vars-value))
+                        (define gen
+                          (parameterize ([generate-env env])
+                            (contract-random-generate/choose the-contract fuel)))
+                        (cond
+                          [gen
+                           (vector-set! args-buffer
+                                        (hash-ref arg-index arg)
+                                        (gen))]
+                          [else #f])))
+                    (when dep-generated?
+                      (define kwd-args
+                        (for/list ([kwd (in-list dom-kwds)])
+                          (vector-ref args-buffer (hash-ref arg-index (hash-ref kwd-vars kwd)))))
+                      (define regular-args
+                        (for/list ([arg-info (in-list args-info)]
+                                   [arg (in-vector args-buffer)]
+                                   #:when (not (cadddr arg-info)))
+                          arg))
+                      (call-with-values
+                       (λ ()
+                         (keyword-apply
+                          f
+                          dom-kwds
+                          kwd-args
+                          regular-args))
+                       (λ results
+                         (for/fold ([rng-ctcs rng-ctcs]
+                                    [rng-exers rng-exers]
+                                    [res-deps res-deps])
+                                   ([res-info (in-list ress-info)]
+                                    [result (in-list results)])
+                           (cond
+                             [(equal? 'undep (car res-info))
+                              (define the-contract (car rng-ctcs))
+                              (define exer (car rng-exers))
+                              (contract-random-generate-stash env the-contract result)
+                              (exer result)
+                              (values (cdr rng-ctcs) (cdr rng-exers) res-deps)]
+                             [else
+                              (define vars (caddr res-info))
+                              (define vars-value
+                                (for/list ([var (in-list vars)])
+                                  (cond
+                                    [(hash-has-key? arg-index var)
+                                     (vector-ref args-buffer (hash-ref arg-index var))]
+                                    [else
+                                     (list-ref results (hash-ref ress-index var))])))
+                              (define the-contract
+                                (apply (car res-deps) vars-value))
+                              (define-values (exer ctcs)
+                                (parameterize ([generate-env env])
+                                  ((contract-struct-exercise the-contract) fuel)))
+                              (contract-random-generate-stash env the-contract result)
+                              (exer result)
+                              (values rng-ctcs rng-exers (cdr res-deps))]))))))
+                  ;; When there exists dependent arguments or range,
+                  ;; we cannot guarantee that the corresponding range
+                  ;; contracts would definitely be generated even
+                  ;; though we still stash the value.
+                  ;;
+                  ;; The condition can be further refined -- dependent
+                  ;; range should be fine.
+                  (cond
+                    [(null? arg-deps)
+                     rng-ctcs]
+                    [else '()]))]
          [else
           (values void '())]))]
     [else

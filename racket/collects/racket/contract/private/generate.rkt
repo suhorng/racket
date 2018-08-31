@@ -19,7 +19,8 @@
          can-generate/env?
          try/env
          multi-exercise
-         fail-escape)
+         fail-escape
+         generate-env)
 
 (define (contract-exercise #:fuel [fuel 10] #:shuffle? [shuffle? #f]
                            v1 . vs)
