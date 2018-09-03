@@ -7,6 +7,7 @@
          "misc.rkt"
          "blame.rkt"
          "generate.rkt"
+         "generate-base.rkt"
          syntax/location
          (only-in racket/list take drop)
          racket/private/performance-hint
@@ -113,6 +114,154 @@
       (define ???-args (build-??-args c-or-i-procedure ctc blame))
       (apply func ???-args))))
 
+(define ((generate->i ctc) fuel)
+  (cond
+    [(not (and (not (->i-rest ctc))
+               (null? (->i-pre/post-procs ctc))
+               ;; can be improved
+               (null? (->i-mandatory-kwds ctc))
+               (not (->i-mtd? ctc))))
+     #f]
+    [else
+     (define env (contract-random-generate-get-current-environment))
+     (define arg-deps (->i-arg-dep-ctcs ctc))
+     (define args-info
+       (for/list ([arg-info (in-list (vector-ref (->i-name-info ctc) 0))]
+                  ;; unless the given argument is optional
+                  #:when (not (list-ref arg-info 4)))
+         arg-info))
+     (define args-names (map cadr args-info))
+     (define arg-nondep-ctcs (map ->i-arg-contract (->i-arg-ctcs ctc)))
+     (define arg-count (length args-info))
+     (define-values (arg-exers listof-addl-availables)
+       (for/lists (arg-exers listof-addl-availables)
+                  ([c (in-list arg-nondep-ctcs)])
+         ((contract-struct-exercise c) fuel)))
+     (define addl-available
+       (apply append arg-nondep-ctcs listof-addl-availables))
+     (define args-index
+       (for/hash ([i (in-naturals)]
+                  [arg-info (in-list args-info)])
+         (values (cadr arg-info) i)))
+     (define rng-deps (->i-rng-dep-ctcs ctc))
+     (define rngs-info (vector-ref (->i-name-info ctc) 3))
+     (define rngs-index
+       (for/hash ([i (in-naturals)]
+                  [rng-info (in-list rngs-info)])
+         (values (cadr rng-info) i)))
+     (define raw-dep-rngs-info
+       (for/list ([rng-info (in-list rngs-info)]
+                  #:when (equal? 'dep (car rng-info)))
+         rng-info))
+     (define dep-rngs-info
+       (for/hash ([rng-info (in-list raw-dep-rngs-info)])
+         (values (cadr rng-info) rng-info)))
+     (define dep-rngs-index
+       (for/hash ([i (in-naturals)]
+                  [rng-info (in-list raw-dep-rngs-info)])
+         (values (cadr rng-info) i)))
+     (define rngs-count (length rngs-info))
+     (define rng-nondep-ctcs (map cdr (->i-rng-ctcs ctc)))
+     (define nondep-rngs (map car (->i-rng-ctcs ctc)))
+     (define rng-gens
+       (with-definitely-available-contracts addl-available
+         (λ ()
+           (for/list ([rng-ctc (in-list rng-nondep-ctcs)])
+             (contract-random-generate/choose rng-ctc fuel)))))
+     (define dep-rngs-order
+       (let topological-sort ([gen-order '()]
+                              [rngs raw-dep-rngs-info])
+         (cond
+           [(null? rngs) (reverse gen-order)]
+           [else
+            (define (var-available? var)
+              (or (member var nondep-rngs)
+                  (member var args-names)
+                  (member var gen-order)))
+            (define rng-index
+              (for/first ([i (in-naturals)]
+                          [rng-info (in-list rngs)]
+                          #:when (andmap var-available? (caddr rng-info)))
+                i))
+            (topological-sort (cons (cadr (list-ref rngs rng-index)) gen-order)
+                              ;; (list-remove args arg-index)
+                              (append (take rngs rng-index)
+                                      (drop rngs (+ rng-index 1))))])))
+     (cond
+       [(not (andmap values rng-gens)) #f]
+       [else
+        (λ ()
+          (procedure-reduce-arity
+           (λ args
+             ;; exercising arguments
+             (for/fold ([arg-exers arg-exers]
+                        [arg-nondep-ctcs arg-nondep-ctcs]
+                        [arg-deps arg-deps])
+                       ([arg (in-list args)]
+                        [arg-info (in-list args-info)])
+               (cond
+                 [(equal? 'nodep (car arg-info))
+                  (define the-contract (car arg-nondep-ctcs))
+                  (define exer (car arg-exers))
+                  (contract-random-generate-stash env the-contract arg)
+                  (exer arg)
+                  (values (cdr arg-exers) (cdr arg-nondep-ctcs) arg-deps)]
+                 [else
+                  (define vars (caddr arg-info))
+                  (define vars-values
+                    (for/list ([var (in-list vars)])
+                      (list-ref args (hash-ref args-index var))))
+                  (define the-contract
+                    (apply (car arg-deps) vars-values))
+                  (define-values (exer ctcs)
+                    (parameterize ([generate-env env])
+                      ((contract-struct-exercise the-contract) fuel)))
+                  (contract-random-generate-stash env the-contract arg)
+                  (exer arg)
+                  (values arg-exers arg-nondep-ctcs (cdr arg-deps))]))
+             ;; generating results
+             (define rngs-buffer (make-vector rngs-count 'no-value))
+             (for ([rng (in-list nondep-rngs)]
+                   [rng-gen (in-list rng-gens)])
+               (vector-set! rngs-buffer
+                            (hash-ref rngs-index rng)
+                            (rng-gen)))
+             (for ([rng (in-list dep-rngs-order)])
+               (define vars (caddr (hash-ref dep-rngs-info rng)))
+               (define vars-value
+                 (for/list ([var (in-list vars)])
+                   (cond
+                     [(hash-has-key? args-index var)
+                      (list-ref args (hash-ref args-index var))]
+                     [else
+                      (vector-ref rngs-buffer (hash-ref rngs-index var))])))
+               (define the-contract
+                 (apply (list-ref rng-deps (hash-ref dep-rngs-index rng))
+                   vars-value))
+               (define gen
+                 (parameterize ([generate-env env])
+                   (contract-random-generate/choose the-contract fuel)))
+               (define generated?
+                 (and gen
+                      (let/ec k
+                        (parameterize ([fail-escape (λ () (k #f))])
+                          (vector-set! rngs-buffer
+                                       (hash-ref rngs-index rng)
+                                       (gen))))))
+               (unless generated?
+                 (error 'generate->i
+                        (string-append
+                         "unable to constructor a generator for range ~a with contract ~a\n"
+                         "  in: ~a\n"
+                         "  arguments: ~s\n"
+                         "  constructed results: ~s")
+                        rng
+                        the-contract
+                        ctc
+                        args
+                        (vector->list rngs-buffer))))
+             (apply values (vector->list rngs-buffer)))
+           arg-count))])]))
 
 (define (exercise->i ctc)
   (define arg-deps (->i-arg-dep-ctcs ctc))
@@ -185,7 +334,6 @@
                        [res-info (in-list ress-info)])
               (values (cadr res-info) i)))
           (values (λ (f)
-(newline)
                     (define args-buffer (make-vector arg-count 'no-value))
                     (for ([arg (in-list nondep-args)]
                           [gen (in-list gens)])
@@ -233,7 +381,7 @@
                                    ([res-info (in-list ress-info)]
                                     [result (in-list results)])
                            (cond
-                             [(equal? 'undep (car res-info))
+                             [(equal? 'nodep (car res-info))
                               (define the-contract (car rng-ctcs))
                               (define exer (car rng-exers))
                               (contract-random-generate-stash env the-contract result)
@@ -260,9 +408,6 @@
                   ;; we cannot guarantee that the corresponding range
                   ;; contracts would definitely be generated even
                   ;; though we still stash the value.
-                  ;;
-                  ;; The condition can be further refined -- dependent
-                  ;; range should be fine.
                   (cond
                     [(null? arg-deps)
                      rng-ctcs]
@@ -427,6 +572,7 @@
          (if has-rest
              (check-procedure/more val mtd? mand-args mand-kwds opt-kwds #f #f)
              (check-procedure val mtd? mand-args opt-args mand-kwds opt-kwds #f #f)))))
+   #:generate generate->i
    #:exercise exercise->i
    #:equivalent (λ (this that) (eq? this that))
    #:stronger (λ (this that) (eq? this that)))) ;; WRONG
