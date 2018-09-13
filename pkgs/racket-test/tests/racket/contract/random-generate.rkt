@@ -435,11 +435,3 @@
            (λ (x) (λ (y) #f))
            'pos
            'neg))
-
-(check-exercise
- 5
- void?
- (contract (-> (and/c #f #t) any)
-           (λ (_) 'thing)
-           'pos
-           'neg))
