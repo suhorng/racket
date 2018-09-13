@@ -418,20 +418,3 @@
   (make-chaperone-contract
    #:late-neg-projection
    (λ (b) (λ (f v np) v)))))
-
-(check-exercise
- 10
- pos-exn?
- (contract (-> integer? (-> integer? integer?))
-           (λ (x) (λ (y) #f))
-           'pos
-           'neg))
-
-(check-exercise
- 10
- pos-exn?
- (contract (->i ([m integer?])
-                [result (-> integer? integer?)])
-           (λ (x) (λ (y) #f))
-           'pos
-           'neg))
