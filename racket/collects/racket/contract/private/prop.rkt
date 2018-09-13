@@ -199,7 +199,7 @@
   (define generate (contract-property-generate prop))
   (if (procedure? generate)
       (generate c)
-      (λ (fuel) #f)))
+      #f))
 
 (define (contract-struct-exercise c)
   (define prop (contract-struct-property c))
