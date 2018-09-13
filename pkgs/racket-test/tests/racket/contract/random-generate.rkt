@@ -2,7 +2,6 @@
 
 (require racket/contract
          racket/contract/private/generate-base
-         (only-in racket/list empty? cons?)
          rackunit
          racket/math
          (for-syntax racket/base))
@@ -112,21 +111,6 @@
  (λ ()
    (test-contract-generation
     null?)))
-
-(check-not-exn
- (λ ()
-   (test-contract-generation
-    empty?)))
-
-(check-not-exn
- (λ ()
-   (test-contract-generation
-    pair?)))
-
-(check-not-exn
- (λ ()
-   (test-contract-generation
-    cons?)))
 
 (check-not-exn
  (λ ()
