@@ -63,17 +63,6 @@
   (/ (integer-gen fuel)
      (exact-positive-integer-gen fuel)))
 
-(define (string-gen fuel)
-  (define len
-    (rand-choice [1/10 0]
-                 [1/10 1]
-                 [else (rand-range 2 260)]))
-  (define strl (build-list len (λ (x) (gen-char fuel))))
-  (apply string strl))
-
-(define (symbol-gen fuel)
-  (string->symbol (string-gen fuel)))
-
 (define predicate-generator-table 
   (hash
    ;; generate integer? 
@@ -82,9 +71,6 @@
    
    exact-integer?
    exact-integer-gen
-
-   symbol?
-   symbol-gen
    
    natural?
    exact-nonnegative-integer-gen
@@ -132,7 +118,12 @@
    gen-char
    
    string?
-   string-gen
+   (λ (fuel)
+     (let* ([len (rand-choice [1/10 0]
+                              [1/10 1]
+                              [else (rand-range 2 260)])]
+            [strl (build-list len (λ (x) (gen-char fuel)))])
+       (apply string strl)))
    
    
    byte?
