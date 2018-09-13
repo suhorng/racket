@@ -21,26 +21,17 @@
          multi-exercise
          fail-escape)
 
-(define (contract-exercise #:fuel [fuel 10] #:shuffle? [shuffle? #f]
-                           v1 . vs)
-  (define orig-vals
+(define (contract-exercise #:fuel [fuel 10] v1 . vs)
+  (define vals 
     (for/list ([val (in-list (cons v1 vs))]
                #:when (value-contract val))
       val))
-  (define vals
-    (cond [shuffle? (shuffle orig-vals)]
-          [else orig-vals]))
   (define ctcs (map value-contract vals))
   (define-values (go _) 
     (parameterize ([generate-env (contract-random-generate-env (make-hash))])
-      ((multi-exercise ctcs #:allow-shuffle? shuffle?) fuel)))
-  (cond
-    [shuffle?
-     (for ([x (in-range fuel)])
-       (go vals #:shuffle? (> x 0)))]
-    [else
-     (for ([x (in-range fuel)])
-       (go vals))]))
+      ((multi-exercise ctcs) fuel)))
+  (for ([x (in-range fuel)])
+    (go vals)))
 
 (define (contract-random-generate-get-current-environment)
   (define env (generate-env))
@@ -50,7 +41,7 @@
   env)
 
 ;; multi-exercise : (listof contract?) -> fuel -> (values (listof ctc) (-> (listof val[ctcs]) void)
-(define (multi-exercise orig-ctcs #:allow-shuffle? [allow-shuffle? #f])
+(define (multi-exercise orig-ctcs)
   (λ (fuel)
     (let loop ([ctcs orig-ctcs]
                [exers '()]
@@ -62,24 +53,18 @@
          (cond
            [(or (zero? max-iterations)
                 (equal? previously-available-ctcs available-ctcs))
-            (define rev-exers (vector->immutable-vector (list->vector (reverse exers))))
-            (define (do-exercise orig-vals shuffle?)
-              (define vals (vector->immutable-vector (list->vector orig-vals)))
-              (define exercise-order
-                (cond
-                  [shuffle? (shuffle (range (vector-length rev-exers)))]
-                  [else (range (vector-length rev-exers))]))
-              (for ([index (in-list exercise-order)])
-                (define exer (vector-ref rev-exers index))
-                (define val  (vector-ref vals (modulo index (vector-length vals))))
-                (let/ec k
-                  (parameterize ([fail-escape (λ () (k))])
-                    (exer val)))))
-            (define (exercise/shuffle orig-vals #:shuffle? [shuffle? #f])
-              (do-exercise orig-vals shuffle?))
-            (define (exercise orig-vals)
-              (do-exercise orig-vals #f))
-            (values (if allow-shuffle? exercise/shuffle exercise)
+            (define rev-exers (reverse exers))
+            (values (λ (orig-vals)
+                      (let loop ([exers rev-exers]
+                                 [vals orig-vals])
+                        (cond
+                          [(null? exers) (void)]
+                          [(null? vals) (loop exers orig-vals)]
+                          [else
+                           (let/ec k
+                             (parameterize ([fail-escape (λ () (k))])
+                               ((car exers) (car vals))))
+                           (loop (cdr exers) (cdr vals))])))
                     available-ctcs)]
            [else
             (loop orig-ctcs
