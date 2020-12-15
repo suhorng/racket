@@ -393,13 +393,21 @@
             ;; Check the module's imports:
             (for* ([imports (in-list (module-compiled-imports mod-code))]
                    [import (cdr imports)])
-              (define mod (let ([m (collapse-module-path-index import in-mod)])
-                            (if (and (pair? m)
-                                     (eq? (car m) 'submod))
-                                (cadr m)
-                                m)))
-              (when (and (pair? mod) (eq? 'lib (car mod)))
-                (check-mod! mod 'run pkg zo-f dir)))
+              (with-handlers ([;; the module is importing a file outside
+                               ;; of the current package
+                               (λ (exn)
+                                 (regexp-match? (regexp-quote "relative path escapes collection")
+                                                (exn-message exn)))
+                               (λ (exn)
+                                 (report-error exn)
+                                 (void))])
+                (define mod (let ([m (collapse-module-path-index import in-mod)])
+                              (if (and (pair? m)
+                                       (eq? (car m) 'submod))
+                                  (cadr m)
+                                  m)))
+                (when (and (pair? mod) (eq? 'lib (car mod)))
+                  (check-mod! mod 'run pkg zo-f dir))))
             ;; Recur for submodules:
             (for-each loop
                       (append
