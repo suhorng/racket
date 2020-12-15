@@ -5,6 +5,36 @@
   (unless (equal? got expected)
     (error 'check "failed: ~s vs. ~s" got expected)))
 
+;; (check-exn exn-predicate thunk [message]) -> void?
+;;   exn-predicate : (or/c (-> any/c any/c) regexp?)
+;;   thunk : (-> any)
+;;   message : (or/c string? #f) = #f
+(define (check-exn-simple exn-predicate thunk [message #f])
+  (define-values (pred? handler)
+    (cond [(procedure? exn-predicate)
+           (values exn-predicate
+                   (λ (e)
+                     (values (exn-predicate e)
+                             e)))]
+          [else
+           (values exn:fail?
+                   (λ (e)
+                     (values (regexp-match? exn-predicate (exn-message e))
+                             e)))]))
+  (define-values (passed? result)
+    (with-handlers ([pred? handler])
+      (thunk)
+      (values #f (no-exception))))
+  (unless passed?
+    (define msg
+      (format "~a\n  expecting exception: ~s\n  but got: ~e\n  argument: ~s"
+              (if message message "failed")
+              exn-predicate
+              result
+              thunk))
+    (error 'check-exn-simple msg)))
+(struct no-exception ())
+
 (define here-dir (find-system-path 'temp-dir))
 (define here (build-path here-dir "dummy.rkt"))
 
@@ -158,3 +188,44 @@
                                    here)
        (build-path here-dir "x" "apple.rkt"))
 
+(check-exn-simple
+ #rx"relative path escapes collection"
+ (λ ()
+   (collapse-module-path "../../X.rkt"
+                         '(lib "private/base.rkt" "racket"))))
+
+(check-exn-simple
+ #rx"relative path escapes collection"
+ (λ ()
+   (collapse-module-path "../../../X.rkt"
+                         '(lib "private/base.rkt" "racket"))))
+
+(check-exn-simple
+ #rx"module path points to a directory"
+ (λ ()
+   (collapse-module-path ".."
+                         '(lib "private/base.rkt" "racket"))))
+
+(check-exn-simple
+ #rx"module path points to a directory"
+ (λ ()
+   (collapse-module-path "../."
+                         '(lib "private/base.rkt" "racket"))))
+
+(check-exn-simple
+ #rx"collapse-module-path: contract violation"
+ (λ ()
+   (collapse-module-path "."
+                         '(lib "private/base.rkt" "racket"))))
+
+(check-exn-simple
+ #rx"collapse-module-path: contract violation"
+ (λ ()
+   (collapse-module-path "./."
+                         '(lib "private/base.rkt" "racket"))))
+
+(check-exn-simple
+ #rx"module path points to a directory"
+ (λ ()
+   (collapse-module-path "./.."
+                         '(lib "private/base.rkt" "racket"))))

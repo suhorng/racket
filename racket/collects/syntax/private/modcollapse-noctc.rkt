@@ -141,8 +141,17 @@ Use syntax/modcollapse instead.
                                        (list (cadr relto-mp)))))])
            (let ([simpler (simpler-relpath path)])
              (let ([m (regexp-match #rx"^(.*)/([^/]*)$" simpler)])
-               (if m
-                   (normalize-lib `(lib ,(caddr m) ,(cadr m)))
+               (if (and m
+                        ;; (cadr m) cannot start with "../", for a simplified
+                        ;; path like that goes outside the collection
+                        (not (regexp-match? #rx"^[.][.]($|/)" (cadr m))))
+                   ;; (caddr m) must not syntactically point to a directory
+                   (if (not (let-values ([(base name must-be-dir?) (split-path (caddr m))])
+                              must-be-dir?))
+                       (normalize-lib `(lib ,(caddr m) ,(cadr m)))
+                       (error 'combine-relative-elements
+                              "the given module path points to a directory: ~s"
+                              elements))
                    (error 'combine-relative-elements
                           "relative path escapes collection: ~s relative to ~s"
                           elements relto-mp))))))]
